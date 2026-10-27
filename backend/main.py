@@ -1,5 +1,7 @@
 import os
 from enum import Enum
+from pathlib import Path
+from typing import Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
@@ -9,6 +11,7 @@ from pydantic import BaseModel, Field
 from tavily import AsyncTavilyClient
 
 load_dotenv()
+load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
 
 DEFAULT_CORS_ORIGINS = [
     "http://localhost:5173",
@@ -27,6 +30,7 @@ allow_origins = (
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allow_origins,
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|\[::1\]|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3})(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -123,8 +127,28 @@ def health_check() -> dict[str, str]:
     return {"status": "ok"}
 
 
+def _configuration_error_message(exc: Exception) -> Optional[str]:
+    message = str(exc).lower()
+    if "openai" in message and ("api_key" in message or "credential" in message):
+        return "OPENAI_API_KEY is not set. Add it to the project .env file."
+    if "tavily" in message and "api" in message:
+        return "TAVILY_API_KEY is not set. Add it to the project .env file."
+    return None
+
+
 @app.post("/api/v1/generate-guide", response_model=OAuthGuide)
 async def generate_guide(request: GenerateGuideRequest) -> OAuthGuide:
     app_name = request.app_name.strip()
-    documentation_context = await investigate_oauth_setup(app_name)
-    return await build_oauth_guide(app_name, documentation_context)
+    try:
+        documentation_context = await investigate_oauth_setup(app_name)
+        return await build_oauth_guide(app_name, documentation_context)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        config_hint = _configuration_error_message(exc)
+        if config_hint:
+            raise HTTPException(status_code=503, detail=config_hint) from exc
+        raise HTTPException(
+            status_code=502,
+            detail="Failed to generate guide. Check server logs for details.",
+        ) from exc
