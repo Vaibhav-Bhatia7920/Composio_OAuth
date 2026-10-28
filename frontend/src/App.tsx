@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { generateGuide } from './api/generateGuide'
+import { generateGuide, getCachedGuide } from './api/generateGuide'
 import { GuideDisplay } from './components/GuideDisplay'
 import { LibrarySidebar } from './components/LibrarySidebar'
 import { TopNav } from './components/TopNav'
@@ -16,6 +16,14 @@ function App() {
   useEffect(() => {
     if (!appName) {
       setGuide(null)
+      setError(null)
+      setLoading(false)
+      return
+    }
+
+    const cached = getCachedGuide(appName)
+    if (cached) {
+      setGuide(cached)
       setError(null)
       setLoading(false)
       return

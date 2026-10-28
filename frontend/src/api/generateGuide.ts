@@ -3,7 +3,22 @@ import type { OAuthGuide } from '../types/guide'
 /** Same-origin `/api` — proxied to the backend in dev (vite.config) or by your deploy reverse proxy. */
 const GENERATE_GUIDE_URL = '/api/v1/generate-guide'
 
+const guideCache = new Map<string, OAuthGuide>()
+
+function guideCacheKey(appName: string): string {
+  return appName.trim().toLowerCase()
+}
+
+export function getCachedGuide(appName: string): OAuthGuide | undefined {
+  return guideCache.get(guideCacheKey(appName))
+}
+
 export async function generateGuide(appName: string): Promise<OAuthGuide> {
+  const cached = getCachedGuide(appName)
+  if (cached) {
+    return cached
+  }
+
   let response: Response
   try {
     response = await fetch(GENERATE_GUIDE_URL, {
@@ -32,5 +47,7 @@ export async function generateGuide(appName: string): Promise<OAuthGuide> {
     throw new Error(detail)
   }
 
-  return response.json() as Promise<OAuthGuide>
+  const guide = (await response.json()) as OAuthGuide
+  guideCache.set(guideCacheKey(appName), guide)
+  return guide
 }

@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import os
 from enum import Enum
 from pathlib import Path
@@ -69,6 +70,7 @@ Rules:
 - agent_automatable_steps: Steps an API-driven agent can perform without a browser UI—e.g. REST calls to create apps, configure redirect URIs via API, rotate secrets via API, fetch metadata, validate token endpoints with HTTP. Do NOT put "log into developer console and click..." here unless an official API exists for that action.
 - human_intervention_steps: Steps that require a human in a web UI, email verification, CAPTCHA, phone MFA, legal/compliance acceptance, manual review by the provider, copying secrets from a dashboard, or tasks with no documented API equivalent.
 - sources_used: Populate this list with the exact documentation URLs from the scraped context. Each excerpt is labeled with a line starting with "URL:" — include every such URL that you used to build the guide. Do not invent or omit URLs that appear in the context.
+- Consistency: Treat the documentation as fixed facts. Pick one difficulty_level and stick to it. Use a single realistic estimated_time band (avoid jumping between e.g. "30 minutes" and "2 hours" for the same setup). Keep a stable division of work: the same documented UI-only actions belong in human_intervention_steps every time; API-automatable actions belong in agent_automatable_steps. Do not rephrase the same facts into a materially different plan on each run.
 
 Keep steps concise, actionable, and ordered. No duplicate steps across agent and human lists."""
 
@@ -104,7 +106,15 @@ def _search_with_duckduckgo(query: str) -> list[dict[str, Any]]:
     return normalized
 
 
-@alru_cache(maxsize=50)
+def _normalize_app_name(app_name: str) -> str:
+    return app_name.strip().casefold()
+
+
+def _guide_seed(app_name_key: str) -> int:
+    digest = hashlib.sha256(app_name_key.encode("utf-8")).digest()
+    return int.from_bytes(digest[:4], "big") % (2**31 - 1)
+
+
 async def investigate_oauth_setup(app_name: str) -> str:
     query = f"{app_name} OAuth provider setup developer documentation"
     results: list[dict[str, Any]] = []
@@ -137,8 +147,11 @@ async def investigate_oauth_setup(app_name: str) -> str:
 
 async def build_oauth_guide(app_name: str, documentation_context: str) -> OAuthGuide:
     openai_client = AsyncOpenAI()
+    app_name_key = _normalize_app_name(app_name)
     completion = await openai_client.beta.chat.completions.parse(
         model="gpt-4o",
+        temperature=0,
+        seed=_guide_seed(app_name_key),
         messages=[
             {"role": "system", "content": OAUTH_GUIDE_SYSTEM_PROMPT},
             {
@@ -161,6 +174,12 @@ async def build_oauth_guide(app_name: str, documentation_context: str) -> OAuthG
     return guide
 
 
+@alru_cache(maxsize=50)
+async def get_oauth_guide_cached(app_name_key: str) -> OAuthGuide:
+    documentation_context = await investigate_oauth_setup(app_name_key)
+    return await build_oauth_guide(app_name_key, documentation_context)
+
+
 @app.get("/health")
 def health_check() -> dict[str, str]:
     return {"status": "ok"}
@@ -178,9 +197,10 @@ def _configuration_error_message(exc: Exception) -> Optional[str]:
 @app.post("/api/v1/generate-guide", response_model=OAuthGuide)
 async def generate_guide(request: GenerateGuideRequest) -> OAuthGuide:
     app_name = request.app_name.strip()
+    if not app_name:
+        raise HTTPException(status_code=422, detail="app_name is required.")
     try:
-        documentation_context = await investigate_oauth_setup(app_name)
-        return await build_oauth_guide(app_name, documentation_context)
+        return await get_oauth_guide_cached(_normalize_app_name(app_name))
     except HTTPException:
         raise
     except Exception as exc:
