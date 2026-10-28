@@ -1,8 +1,11 @@
+import asyncio
 import os
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
+from async_lru import alru_cache
+from duckduckgo_search import DDGS
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -49,6 +52,7 @@ class OAuthGuide(BaseModel):
     prerequisites_and_blockers: list[str]
     agent_automatable_steps: list[str]
     human_intervention_steps: list[str]
+    sources_used: list[str]
 
 
 class GenerateGuideRequest(BaseModel):
@@ -64,36 +68,71 @@ Rules:
 - prerequisites_and_blockers: Accounts, roles, billing, verified domains, admin approval, API access requests, or missing public docs.
 - agent_automatable_steps: Steps an API-driven agent can perform without a browser UI—e.g. REST calls to create apps, configure redirect URIs via API, rotate secrets via API, fetch metadata, validate token endpoints with HTTP. Do NOT put "log into developer console and click..." here unless an official API exists for that action.
 - human_intervention_steps: Steps that require a human in a web UI, email verification, CAPTCHA, phone MFA, legal/compliance acceptance, manual review by the provider, copying secrets from a dashboard, or tasks with no documented API equivalent.
+- sources_used: Populate this list with the exact documentation URLs from the scraped context. Each excerpt is labeled with a line starting with "URL:" — include every such URL that you used to build the guide. Do not invent or omit URLs that appear in the context.
 
 Keep steps concise, actionable, and ordered. No duplicate steps across agent and human lists."""
 
 
+def _format_documentation_context(results: list[dict[str, Any]]) -> str:
+    sections: list[str] = []
+    for index, result in enumerate(results, start=1):
+        title = result.get("title") or "Untitled"
+        url = result.get("url") or result.get("href") or ""
+        raw_content = (
+            result.get("raw_content")
+            or result.get("content")
+            or result.get("body")
+            or ""
+        )
+        sections.append(
+            f"### Source {index}: {title}\nURL: {url}\n\n{raw_content.strip()}"
+        )
+    return "\n\n---\n\n".join(sections)
+
+
+def _search_with_duckduckgo(query: str) -> list[dict[str, Any]]:
+    ddg_results = DDGS().text(query, max_results=3)
+    normalized: list[dict[str, Any]] = []
+    for item in ddg_results:
+        normalized.append(
+            {
+                "title": item.get("title"),
+                "url": item.get("href"),
+                "content": item.get("body"),
+            }
+        )
+    return normalized
+
+
+@alru_cache(maxsize=50)
 async def investigate_oauth_setup(app_name: str) -> str:
     query = f"{app_name} OAuth provider setup developer documentation"
-    client = AsyncTavilyClient()
-    response = await client.search(
-        query=query,
-        max_results=2,
-        include_raw_content=True,
-    )
+    results: list[dict[str, Any]] = []
 
-    results = response.get("results", [])[:2]
+    try:
+        client = AsyncTavilyClient()
+        response = await client.search(
+            query=query,
+            max_results=2,
+            include_raw_content=True,
+        )
+        results = response.get("results", [])[:2]
+    except Exception:
+        results = []
+
+    if not results:
+        try:
+            results = await asyncio.to_thread(_search_with_duckduckgo, query)
+        except Exception:
+            results = []
+
     if not results:
         raise HTTPException(
             status_code=502,
             detail="No documentation found for the requested application.",
         )
 
-    sections: list[str] = []
-    for index, result in enumerate(results, start=1):
-        title = result.get("title") or "Untitled"
-        url = result.get("url") or ""
-        raw_content = result.get("raw_content") or result.get("content") or ""
-        sections.append(
-            f"### Source {index}: {title}\nURL: {url}\n\n{raw_content.strip()}"
-        )
-
-    return "\n\n---\n\n".join(sections)
+    return _format_documentation_context(results)
 
 
 async def build_oauth_guide(app_name: str, documentation_context: str) -> OAuthGuide:

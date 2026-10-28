@@ -6,4 +6,5 @@ export interface OAuthGuide {
   prerequisites_and_blockers: string[]
   agent_automatable_steps: string[]
   human_intervention_steps: string[]
+  sources_used: string[]
 }

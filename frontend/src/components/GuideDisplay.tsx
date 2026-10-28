@@ -203,6 +203,31 @@ export function GuideDisplay({
           </ol>
         </section>
       </div>
+
+      {guide.sources_used.length > 0 ? (
+        <section aria-labelledby="sources-heading">
+          <h2
+            id="sources-heading"
+            className="mb-2 text-xs font-medium uppercase tracking-wide text-zinc-500"
+          >
+            Sources
+          </h2>
+          <ul className="space-y-1.5">
+            {guide.sources_used.map((url) => (
+              <li key={url}>
+                <a
+                  href={url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="break-all font-mono text-sm text-zinc-500 transition hover:text-zinc-300"
+                >
+                  {url}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
     </div>
   )
 }
